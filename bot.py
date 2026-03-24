@@ -208,14 +208,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Анализирую фото...")
 
+    user_id = update.effective_user.id
     photo = update.message.photo[-1]  # largest size
     file = await context.bot.get_file(photo.file_id)
     image_url = file.file_path  # Telegram provides a direct URL
 
     caption = update.message.caption
     result = await analyze_photo(image_url, caption)
-    for i in range(0, len(result), 4000):
-        await update.message.reply_text(result[i : i + 4000], parse_mode="Markdown")
+
+    # Save photo analysis as a note
+    note_text = f"[Фото] {caption}\n{result}" if caption else f"[Фото] {result}"
+    note_id, category = await save_note(user_id, note_text)
+    total = await get_notes_count(user_id)
+
+    cat_label = f" [{category}]" if category else ""
+    reply = f"{result}\n\n💾 Сохранено как заметка{cat_label} (#{note_id}, всего: {total})"
+    for i in range(0, len(reply), 4000):
+        await update.message.reply_text(reply[i : i + 4000], parse_mode="Markdown")
 
 
 async def autodaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
