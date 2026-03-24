@@ -21,6 +21,7 @@ from ai import (
     generate_reminders,
     generate_weekly_review,
     process_custom_request,
+    analyze_photo,
 )
 
 load_dotenv()
@@ -201,6 +202,22 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Удалено заметок: {deleted}.")
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+
+    await update.message.reply_text("Анализирую фото...")
+
+    photo = update.message.photo[-1]  # largest size
+    file = await context.bot.get_file(photo.file_id)
+    image_url = file.file_path  # Telegram provides a direct URL
+
+    caption = update.message.caption
+    result = await analyze_photo(image_url, caption)
+    for i in range(0, len(result), 4000):
+        await update.message.reply_text(result[i : i + 4000], parse_mode="Markdown")
+
+
 async def autodaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
@@ -264,6 +281,7 @@ async def main():
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("autodaily", autodaily))
     app.add_handler(CommandHandler("myid", myid))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note))
 
     logger.info("Bot started!")

@@ -48,16 +48,16 @@ async def generate_daily_report(notes: list[dict]) -> str:
     if not notes:
         return "No notes found for this period."
 
-    return _call(f"""Here are my notes/dumps from today. Generate a concise daily standup report from them.
+    return _call(f"""Here are my notes/dumps from today. Generate a concise daily standup report from them. Always respond in Russian.
 
 Format:
-**What I did:**
+**Что сделано:**
 - bullet points
 
-**What I'm working on:**
+**Над чем работаю:**
 - bullet points
 
-**Blockers/Notes:**
+**Блокеры/Заметки:**
 - bullet points (if any)
 
 Notes:
@@ -99,6 +99,25 @@ Tag list (plain language, alphabetical) and 5 retrieval prompts I can ask my own
 
 Notes:
 {_format_notes(notes)}""", max_tokens=8192)
+
+
+async def analyze_photo(image_url: str, caption: str | None = None) -> str:
+    user_content = []
+    if caption:
+        user_content.append({"type": "text", "text": caption})
+    else:
+        user_content.append({"type": "text", "text": "Опиши что на этом изображении. Отвечай на русском."})
+    user_content.append({"type": "image_url", "image_url": {"url": image_url}})
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=2048,
+        messages=[
+            {"role": "system", "content": "Ты помощник, который анализирует изображения. Отвечай на русском языке."},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    return response.choices[0].message.content
 
 
 async def process_custom_request(notes: list[dict], user_request: str) -> str:
