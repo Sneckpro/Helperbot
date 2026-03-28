@@ -388,22 +388,31 @@ async def handle_reminder_request(update: Update, context: ContextTypes.DEFAULT_
     repeat_days = parsed.get("repeat_days")
     date_str = parsed.get("date")
 
-    hour, minute = map(int, time_str.split(":"))
+    try:
+        parts = time_str.split(":")
+        hour, minute = int(parts[0]), int(parts[1])
+    except (ValueError, IndexError):
+        await update.message.reply_text("Не удалось разобрать время. Попробуй: напомни в 15:00 ...")
+        return
 
-    if is_recurring:
-        target_date = now_local.date()
-        target_local = datetime(target_date.year, target_date.month, target_date.day,
-                                hour, minute, tzinfo=user_tz)
-        if target_local <= now_local:
-            target_local += timedelta(days=1)
-    else:
-        if date_str:
-            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    try:
+        if is_recurring:
+            target_date = now_local.date()
+            target_local = datetime(target_date.year, target_date.month, target_date.day,
+                                    hour, minute, tzinfo=user_tz)
+            if target_local <= now_local:
+                target_local += timedelta(days=1)
         else:
-            d = now_local.date()
-        target_local = datetime(d.year, d.month, d.day, hour, minute, tzinfo=user_tz)
-        if target_local <= now_local and not date_str:
-            target_local += timedelta(days=1)
+            if date_str:
+                d = datetime.strptime(date_str, "%Y-%m-%d").date()
+            else:
+                d = now_local.date()
+            target_local = datetime(d.year, d.month, d.day, hour, minute, tzinfo=user_tz)
+            if target_local <= now_local and not date_str:
+                target_local += timedelta(days=1)
+    except (ValueError, TypeError):
+        await update.message.reply_text("Не удалось разобрать дату. Попробуй: напомни завтра в 15:00 ...")
+        return
 
     remind_at_utc = target_local.astimezone(timezone.utc)
 
@@ -501,7 +510,7 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"`{r['id']}` — {r['text']} — {time_str}{recurring}{days}")
 
     lines.append("\nОтменить: /cancel <id>")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines))
 
 
 async def cancel_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
