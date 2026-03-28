@@ -48,11 +48,12 @@ async def init_db():
                 auto_daily_enabled INTEGER NOT NULL DEFAULT 1
             )
         """)
-        # Add timezone column if upgrading from old schema
-        try:
-            await db.execute("ALTER TABLE user_settings ADD COLUMN timezone TEXT")
-        except Exception:
-            pass
+        # Add columns if upgrading from old schema
+        for col in ("timezone TEXT", "last_auto_daily TEXT"):
+            try:
+                await db.execute(f"ALTER TABLE user_settings ADD COLUMN {col}")
+            except Exception:
+                pass
         await db.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,6 +160,25 @@ async def get_timezone(user_id: int) -> str | None:
         )
         row = await cursor.fetchone()
         return row[0] if row else None
+
+
+async def get_last_auto_daily(user_id: int) -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT last_auto_daily FROM user_settings WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+
+async def set_last_auto_daily(user_id: int, date_str: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO user_settings (user_id, last_auto_daily) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET last_auto_daily = ?",
+            (user_id, date_str, date_str),
+        )
+        await db.commit()
 
 
 async def save_reminder(user_id: int, text: str, remind_at: str,

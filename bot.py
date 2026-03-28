@@ -19,6 +19,7 @@ from database import (
     get_all_user_ids, set_auto_daily, get_auto_daily, CATEGORIES,
     set_timezone, get_timezone, save_reminder, get_pending_reminders,
     get_user_reminders, delete_reminder, update_reminder_next,
+    get_last_auto_daily, set_last_auto_daily,
 )
 from ai import (
     generate_daily_report,
@@ -42,9 +43,6 @@ ALLOWED_USER_IDS: set[int] = set()
 raw = os.getenv("ALLOWED_USER_IDS", "")
 if raw:
     ALLOWED_USER_IDS = {int(uid.strip()) for uid in raw.split(",") if uid.strip()}
-
-# Timezone offset for auto-daily (UTC+3 = Moscow, so 22:00 MSK = 19:00 UTC)
-AUTO_DAILY_HOUR_UTC = int(os.getenv("AUTO_DAILY_HOUR_UTC", "19"))
 
 TIMEZONE_ALIASES = {
     "cet": "Europe/Berlin", "cest": "Europe/Berlin",
@@ -594,18 +592,35 @@ async def autodaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_state = not current
     await set_auto_daily(user_id, new_state)
     status = "включён" if new_state else "выключен"
-    await update.message.reply_text(f"Авто-дейли {status}. {'Отчёт будет приходить каждый день в 22:00.' if new_state else ''}")
+    tz_name = await get_timezone(user_id)
+    tz_hint = "" if tz_name else "\n(Укажи часовой пояс: /timezone CET)"
+    msg = f"Авто-дейли {status}."
+    if new_state:
+        msg += f" Отчёт будет приходить каждый день в 22:00.{tz_hint}"
+    await update.message.reply_text(msg)
 
 
 # --- Auto daily job ---
 
 async def auto_daily_job(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Running auto-daily job...")
     user_ids = await get_all_user_ids()
     for user_id in user_ids:
         if not is_allowed(user_id):
             continue
         if not await get_auto_daily(user_id):
+            continue
+
+        # Determine user's local time
+        tz_name = await get_timezone(user_id)
+        user_tz = ZoneInfo(tz_name) if tz_name else timezone.utc
+        now_local = datetime.now(user_tz)
+
+        if now_local.hour != 22:
+            continue
+
+        # Dedup: don't send twice on the same day
+        today_str = now_local.strftime("%Y-%m-%d")
+        if await get_last_auto_daily(user_id) == today_str:
             continue
 
         since = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -623,6 +638,7 @@ async def auto_daily_job(context: ContextTypes.DEFAULT_TYPE):
                     text=full[i : i + 4000],
                     parse_mode="Markdown",
                 )
+            await set_last_auto_daily(user_id, today_str)
             logger.info(f"Auto-daily sent to {user_id}")
         except Exception as e:
             logger.error(f"Auto-daily failed for {user_id}: {e}")
@@ -674,14 +690,10 @@ async def main():
             BotCommand("myid", "Мой Telegram ID"),
         ])
 
-        # Schedule auto-daily at configured hour UTC (default 19:00 UTC = 22:00 MSK)
+        # Check every hour if it's 22:00 in any user's timezone
         job_queue = app.job_queue
-        job_queue.run_daily(
-            auto_daily_job,
-            time=time(hour=AUTO_DAILY_HOUR_UTC, minute=0, tzinfo=timezone.utc),
-            name="auto_daily",
-        )
-        logger.info(f"Auto-daily scheduled at {AUTO_DAILY_HOUR_UTC}:00 UTC")
+        job_queue.run_repeating(auto_daily_job, interval=3600, first=10, name="auto_daily")
+        logger.info("Auto-daily scheduler started (hourly check)")
 
         await load_reminders(app)
 
