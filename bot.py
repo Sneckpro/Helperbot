@@ -1,5 +1,6 @@
 import os
 import logging
+import tempfile
 from datetime import datetime, timedelta, time, timezone
 
 from dotenv import load_dotenv
@@ -22,6 +23,7 @@ from ai import (
     generate_weekly_review,
     process_custom_request,
     analyze_photo,
+    transcribe_audio,
 )
 
 load_dotenv()
@@ -97,10 +99,10 @@ async def handle_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
-    note_id, category = await save_note(user_id, text)
+    _, category = await save_note(user_id, text)
     total = await get_notes_count(user_id)
     cat_label = f" [{category}]" if category else ""
-    await update.message.reply_text(f"Сохранено{cat_label} (#{note_id}, всего: {total})")
+    await update.message.reply_text(f"✅ Сохранено{cat_label} (всего: {total})")
 
 
 def _parse_category_arg(args: list[str] | None) -> str | None:
@@ -218,13 +220,85 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Save photo analysis as a note
     note_text = f"[Фото] {caption}\n{result}" if caption else f"[Фото] {result}"
-    note_id, category = await save_note(user_id, note_text)
+    _, category = await save_note(user_id, note_text)
     total = await get_notes_count(user_id)
 
     cat_label = f" [{category}]" if category else ""
-    reply = f"{result}\n\n💾 Сохранено как заметка{cat_label} (#{note_id}, всего: {total})"
+    reply = f"{result}\n\n💾 Сохранено как заметка{cat_label} (всего: {total})"
     for i in range(0, len(reply), 4000):
         await update.message.reply_text(reply[i : i + 4000], parse_mode="Markdown")
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+
+    await update.message.reply_text("Распознаю голосовое...")
+
+    user_id = update.effective_user.id
+    voice = update.message.voice
+    file = await context.bot.get_file(voice.file_id)
+
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        tmp_path = tmp.name
+        await file.download_to_drive(tmp_path)
+
+    try:
+        text = await transcribe_audio(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+    note_text = f"[Голос] {text}"
+    _, category = await save_note(user_id, note_text)
+    total = await get_notes_count(user_id)
+
+    cat_label = f" [{category}]" if category else ""
+    reply = f"🎤 {text}\n\n✅ Сохранено{cat_label} (всего: {total})"
+    for i in range(0, len(reply), 4000):
+        await update.message.reply_text(reply[i : i + 4000])
+
+
+def _get_forward_source(message) -> str:
+    if message.forward_from:
+        name = message.forward_from.full_name
+        return name
+    if message.forward_from_chat:
+        return message.forward_from_chat.title or "чат"
+    if message.forward_sender_name:
+        return message.forward_sender_name
+    return "неизвестно"
+
+
+async def handle_forwarded(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+
+    user_id = update.effective_user.id
+    msg = update.message
+    source = _get_forward_source(msg)
+
+    # Forwarded photo
+    if msg.photo:
+        await msg.reply_text("Анализирую пересланное фото...")
+        photo = msg.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        image_url = file.file_path
+        result = await analyze_photo(image_url, msg.caption)
+        note_text = f"[Переслано от: {source}] [Фото] {msg.caption or ''}\n{result}"
+    elif msg.text:
+        note_text = f"[Переслано от: {source}] {msg.text}"
+    elif msg.caption:
+        note_text = f"[Переслано от: {source}] {msg.caption}"
+    else:
+        await msg.reply_text("Не могу сохранить это сообщение — нет текста.")
+        return
+
+    _, category = await save_note(user_id, note_text)
+    total = await get_notes_count(user_id)
+
+    cat_label = f" [{category}]" if category else ""
+    reply = f"📨 Переслано от {source}\n✅ Сохранено{cat_label} (всего: {total})"
+    await msg.reply_text(reply)
 
 
 async def autodaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -290,6 +364,8 @@ async def main():
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("autodaily", autodaily))
     app.add_handler(CommandHandler("myid", myid))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.FORWARDED, handle_forwarded))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note))
 

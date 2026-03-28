@@ -44,6 +44,15 @@ def _format_notes(notes: list[dict]) -> str:
     return "\n\n".join(f"[{n['created_at']}]\n{n['text']}" for n in notes)
 
 
+async def transcribe_audio(file_path: str) -> str:
+    with open(file_path, "rb") as f:
+        response = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=f,
+        )
+    return response.text
+
+
 async def generate_daily_report(notes: list[dict]) -> str:
     if not notes:
         return "No notes found for this period."
