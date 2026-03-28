@@ -20,6 +20,7 @@ from database import (
     set_timezone, get_timezone, save_reminder, get_pending_reminders,
     get_user_reminders, delete_reminder, update_reminder_next,
     get_last_auto_daily, set_last_auto_daily,
+    get_auto_daily_hour, set_auto_daily_hour,
 )
 from ai import (
     generate_daily_report,
@@ -91,7 +92,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💬 /ask <вопрос> — вопрос по заметкам\n"
         "🔢 /count — сколько заметок\n"
         "🗑 /clear — удалить все заметки\n"
-        "🔔 /autodaily — вкл/выкл авто-отчёт в 22:00\n"
+        "🔔 /autodaily [время] — авто-отчёт (напр. /autodaily 21:00)\n"
         "🌍 /timezone CET — часовой пояс\n"
         "⏰ /reminders — активные напоминания\n"
         "❌ /cancel <id> — отменить напоминание\n"
@@ -588,16 +589,39 @@ async def autodaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
     user_id = update.effective_user.id
+
+    # /autodaily 21:00 — set time
+    if context.args:
+        time_arg = context.args[0].replace(":", "")
+        try:
+            if ":" in context.args[0]:
+                h = int(context.args[0].split(":")[0])
+            else:
+                h = int(time_arg)
+        except ValueError:
+            await update.message.reply_text("Формат: /autodaily 21:00")
+            return
+        if not 0 <= h <= 23:
+            await update.message.reply_text("Час должен быть от 0 до 23.")
+            return
+        await set_auto_daily_hour(user_id, h)
+        await set_auto_daily(user_id, True)
+        tz_name = await get_timezone(user_id)
+        tz_hint = " (укажи /timezone)" if not tz_name else ""
+        await update.message.reply_text(f"Авто-дейли включён. Отчёт каждый день в {h:02d}:00.{tz_hint}")
+        return
+
+    # /autodaily — toggle on/off
     current = await get_auto_daily(user_id)
     new_state = not current
     await set_auto_daily(user_id, new_state)
-    status = "включён" if new_state else "выключен"
-    tz_name = await get_timezone(user_id)
-    tz_hint = "" if tz_name else "\n(Укажи часовой пояс: /timezone CET)"
-    msg = f"Авто-дейли {status}."
     if new_state:
-        msg += f" Отчёт будет приходить каждый день в 22:00.{tz_hint}"
-    await update.message.reply_text(msg)
+        hour = await get_auto_daily_hour(user_id)
+        tz_name = await get_timezone(user_id)
+        tz_hint = " (укажи /timezone)" if not tz_name else ""
+        await update.message.reply_text(f"Авто-дейли включён. Отчёт каждый день в {hour:02d}:00.{tz_hint}")
+    else:
+        await update.message.reply_text("Авто-дейли выключен.")
 
 
 # --- Auto daily job ---
@@ -615,7 +639,8 @@ async def auto_daily_job(context: ContextTypes.DEFAULT_TYPE):
         user_tz = ZoneInfo(tz_name) if tz_name else timezone.utc
         now_local = datetime.now(user_tz)
 
-        if now_local.hour != 22:
+        target_hour = await get_auto_daily_hour(user_id)
+        if now_local.hour != target_hour:
             continue
 
         # Dedup: don't send twice on the same day

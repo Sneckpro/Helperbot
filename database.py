@@ -49,7 +49,7 @@ async def init_db():
             )
         """)
         # Add columns if upgrading from old schema
-        for col in ("timezone TEXT", "last_auto_daily TEXT"):
+        for col in ("timezone TEXT", "last_auto_daily TEXT", "auto_daily_hour INTEGER DEFAULT 22"):
             try:
                 await db.execute(f"ALTER TABLE user_settings ADD COLUMN {col}")
             except Exception:
@@ -169,6 +169,25 @@ async def get_last_auto_daily(user_id: int) -> str | None:
         )
         row = await cursor.fetchone()
         return row[0] if row else None
+
+
+async def get_auto_daily_hour(user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT auto_daily_hour FROM user_settings WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] is not None else 22
+
+
+async def set_auto_daily_hour(user_id: int, hour: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO user_settings (user_id, auto_daily_hour) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET auto_daily_hour = ?",
+            (user_id, hour, hour),
+        )
+        await db.commit()
 
 
 async def set_last_auto_daily(user_id: int, date_str: str):
