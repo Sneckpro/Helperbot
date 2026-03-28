@@ -257,29 +257,57 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Удалено заметок: {deleted}.")
 
 
+def _is_reminder_request(text: str) -> bool:
+    lower = text.lower().strip()
+    if lower.startswith("/reminders"):
+        return True
+    return (lower.startswith("напомни") or lower.startswith("напоминай")
+            or "напоминани" in lower)
+
+
+def _clean_reminder_text(text: str) -> str:
+    """Strip /reminders prefix from caption."""
+    clean = text.strip()
+    if clean.lower().startswith("/reminders"):
+        clean = clean[10:].strip()
+    return clean
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
 
-    await update.message.reply_text("Анализирую фото...")
-
     user_id = update.effective_user.id
-    photo = update.message.photo[-1]  # largest size
-    file = await context.bot.get_file(photo.file_id)
-    image_url = file.file_path  # Telegram provides a direct URL
-
     caption = update.message.caption
-    result = await analyze_photo(image_url, caption)
+    is_reminder = caption and _is_reminder_request(caption)
+
+    if is_reminder:
+        await update.message.reply_text("Анализирую фото и создаю напоминание...")
+    else:
+        await update.message.reply_text("Анализирую фото...")
+
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    image_url = file.file_path
+
+    # If caption is a reminder request, analyze photo without it
+    # so GPT describes the image instead of responding to the instruction
+    result = await analyze_photo(image_url, None if is_reminder else caption)
 
     # Save photo analysis as a note
     note_text = f"[Фото] {caption}\n{result}" if caption else f"[Фото] {result}"
     _, category = await save_note(user_id, note_text)
     total = await get_notes_count(user_id)
-
     cat_label = f" [{category}]" if category else ""
+
     reply = f"{result}\n\n💾 Сохранено как заметка{cat_label} (всего: {total})"
     for i in range(0, len(reply), 4000):
-        await update.message.reply_text(reply[i : i + 4000], parse_mode="Markdown")
+        await update.message.reply_text(reply[i : i + 4000])
+
+    if is_reminder:
+        await handle_reminder_request(
+            update, context, _clean_reminder_text(caption), save_as_note_on_fail=False
+        )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -354,7 +382,8 @@ async def handle_forwarded(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(reply)
 
 
-async def handle_reminder_request(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+async def handle_reminder_request(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                   text: str, save_as_note_on_fail: bool = True):
     user_id = update.effective_user.id
 
     tz_name = await get_timezone(user_id)
@@ -374,12 +403,15 @@ async def handle_reminder_request(update: Update, context: ContextTypes.DEFAULT_
 
     parsed = await parse_reminder(text, current_dt_str)
     if not parsed or "time" not in parsed:
-        _, category = await save_note(user_id, text)
-        total = await get_notes_count(user_id)
-        cat_label = f" [{category}]" if category else ""
-        await update.message.reply_text(
-            f"Не удалось разобрать напоминание, сохранено как заметка{cat_label} (всего: {total})"
-        )
+        if save_as_note_on_fail:
+            _, category = await save_note(user_id, text)
+            total = await get_notes_count(user_id)
+            cat_label = f" [{category}]" if category else ""
+            await update.message.reply_text(
+                f"Не удалось разобрать напоминание, сохранено как заметка{cat_label} (всего: {total})"
+            )
+        else:
+            await update.message.reply_text("Не удалось разобрать напоминание из подписи.")
         return
 
     reminder_text = parsed["text"]
