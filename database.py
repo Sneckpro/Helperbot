@@ -48,6 +48,22 @@ async def init_db():
                 auto_daily_enabled INTEGER NOT NULL DEFAULT 1
             )
         """)
+        # Add timezone column if upgrading from old schema
+        try:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN timezone TEXT")
+        except Exception:
+            pass
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                remind_at TEXT NOT NULL,
+                is_recurring INTEGER NOT NULL DEFAULT 0,
+                repeat_days_left INTEGER,
+                created_at TEXT NOT NULL
+            )
+        """)
         await db.commit()
 
 
@@ -124,3 +140,79 @@ async def get_auto_daily(user_id: int) -> bool:
         )
         row = await cursor.fetchone()
         return row[0] == 1 if row else True  # enabled by default
+
+
+async def set_timezone(user_id: int, tz: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO user_settings (user_id, timezone) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET timezone = ?",
+            (user_id, tz, tz),
+        )
+        await db.commit()
+
+
+async def get_timezone(user_id: int) -> str | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT timezone FROM user_settings WHERE user_id = ?", (user_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+
+async def save_reminder(user_id: int, text: str, remind_at: str,
+                        is_recurring: bool = False, repeat_days_left: int | None = None) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO reminders (user_id, text, remind_at, is_recurring, repeat_days_left, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, text, remind_at, int(is_recurring), repeat_days_left,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_pending_reminders() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, user_id, text, remind_at, is_recurring, repeat_days_left "
+            "FROM reminders ORDER BY remind_at ASC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_user_reminders(user_id: int) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, text, remind_at, is_recurring, repeat_days_left "
+            "FROM reminders WHERE user_id = ? ORDER BY remind_at ASC",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def delete_reminder(reminder_id: int, user_id: int | None = None) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        if user_id is not None:
+            cursor = await db.execute(
+                "DELETE FROM reminders WHERE id = ? AND user_id = ?", (reminder_id, user_id)
+            )
+        else:
+            cursor = await db.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def update_reminder_next(reminder_id: int, remind_at: str, repeat_days_left: int | None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE reminders SET remind_at = ?, repeat_days_left = ? WHERE id = ?",
+            (remind_at, repeat_days_left, reminder_id),
+        )
+        await db.commit()

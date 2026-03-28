@@ -1,4 +1,5 @@
 import os
+import json
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -51,6 +52,41 @@ async def transcribe_audio(file_path: str) -> str:
             file=f,
         )
     return response.text
+
+
+async def parse_reminder(text: str, current_datetime: str) -> dict | None:
+    response = client.chat.completions.create(
+        model=MODEL,
+        max_tokens=256,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": f"""You parse reminder requests into JSON. Current date/time: {current_datetime}.
+
+Return JSON with fields:
+- "text": string — what to remind about
+- "time": string — HH:MM (24h format)
+- "date": string or null — YYYY-MM-DD. null if recurring
+- "recurring": boolean — repeats daily or not
+- "repeat_days": integer or null — days to repeat (null = indefinite for recurring, null for one-time)
+
+Rules:
+- "завтра" = next day from current date
+- "через N часов" = compute actual time from current
+- If only time given (no date, not recurring), use today. If that time already passed today, use tomorrow
+- "каждый день" = recurring: true
+- "в течение N дней" = repeat_days: N
+
+If not a reminder request, return {{"error": true}}."""},
+            {"role": "user", "content": text},
+        ],
+    )
+    try:
+        result = json.loads(response.choices[0].message.content)
+        if result.get("error"):
+            return None
+        return result
+    except (json.JSONDecodeError, KeyError):
+        return None
 
 
 async def generate_daily_report(notes: list[dict]) -> str:
