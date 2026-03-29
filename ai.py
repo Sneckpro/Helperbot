@@ -165,6 +165,31 @@ async def analyze_photo(image_url: str, caption: str | None = None) -> str:
     return response.choices[0].message.content
 
 
+async def generate_photo_daily_plan(image_url: str, num_days: int) -> list[str]:
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=2048,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": (
+                f"Проанализируй изображение с планом тренировок/расписанием. "
+                f"Для каждого из {num_days} дней создай короткий текст напоминания "
+                f"с конкретными упражнениями и количеством повторений. "
+                f"Верни JSON: {{\"days\": [\"День 1: ...\", \"День 2: ...\", ...]}}"
+            )},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": image_url}},
+                {"type": "text", "text": f"Разбей на {num_days} дней."},
+            ]},
+        ],
+    )
+    try:
+        result = json.loads(response.choices[0].message.content)
+        return result.get("days", [])
+    except (json.JSONDecodeError, KeyError):
+        return []
+
+
 async def process_custom_request(notes: list[dict], user_request: str) -> str:
     if not notes:
         return "No notes found."

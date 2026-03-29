@@ -30,6 +30,7 @@ from ai import (
     analyze_photo,
     transcribe_audio,
     parse_reminder,
+    generate_photo_daily_plan,
 )
 
 load_dotenv()
@@ -304,9 +305,67 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply[i : i + 4000])
 
     if is_reminder:
-        await handle_reminder_request(
-            update, context, _clean_reminder_text(caption), save_as_note_on_fail=False
-        )
+        clean_text = _clean_reminder_text(caption)
+        tz_name = await get_timezone(user_id)
+        if not tz_name:
+            await update.message.reply_text("Для напоминаний укажи часовой пояс: /timezone CET")
+            return
+
+        user_tz = ZoneInfo(tz_name)
+        now_local = datetime.now(user_tz)
+        parsed = await parse_reminder(clean_text, now_local.strftime("%Y-%m-%d %H:%M"))
+
+        if not parsed or "time" not in parsed:
+            await update.message.reply_text("Не удалось разобрать напоминание из подписи.")
+            return
+
+        try:
+            parts = parsed["time"].split(":")
+            hour, minute = int(parts[0]), int(parts[1])
+        except (ValueError, IndexError):
+            await update.message.reply_text("Не удалось разобрать время.")
+            return
+
+        is_recurring = parsed.get("recurring", False)
+        repeat_days = parsed.get("repeat_days")
+
+        target_date = now_local.date()
+        target_local = datetime(target_date.year, target_date.month, target_date.day,
+                                hour, minute, tzinfo=user_tz)
+        if target_local <= now_local:
+            target_local += timedelta(days=1)
+        first_utc = target_local.astimezone(timezone.utc)
+        time_display = target_local.strftime("%H:%M")
+
+        if is_recurring and repeat_days:
+            await update.message.reply_text("📋 Составляю план по дням...")
+            daily_texts = await generate_photo_daily_plan(image_url, repeat_days)
+
+            if daily_texts:
+                count = min(len(daily_texts), repeat_days)
+                for i in range(count):
+                    remind_at = (first_utc + timedelta(days=i)).isoformat()
+                    rid = await save_reminder(user_id, daily_texts[i], remind_at)
+                    schedule_reminder_job(context.job_queue, rid, user_id,
+                                          daily_texts[i], remind_at, False, None)
+                await update.message.reply_text(
+                    f"⏰ Создано {count} напоминаний каждый день в {time_display}\n"
+                    f"Первое: завтра, {daily_texts[0][:80]}..."
+                )
+            else:
+                await update.message.reply_text("Не удалось разбить фото на дни.")
+        else:
+            reminder_text = parsed.get("text", clean_text)
+            rid = await save_reminder(user_id, reminder_text, first_utc.isoformat(),
+                                      is_recurring=is_recurring, repeat_days_left=repeat_days)
+            schedule_reminder_job(context.job_queue, rid, user_id, reminder_text,
+                                  first_utc.isoformat(), is_recurring, repeat_days)
+            if is_recurring:
+                days_info = f" в течение {repeat_days} дн." if repeat_days else ""
+                await update.message.reply_text(f"⏰ {reminder_text}\n🔁 Каждый день в {time_display}{days_info}")
+            else:
+                date_display = target_local.strftime("%d.%m.%Y")
+                await update.message.reply_text(f"⏰ {reminder_text}\n📅 {date_display} в {time_display}")
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
