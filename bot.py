@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 from database import (
-    init_db, save_note, get_notes, get_notes_count, clear_notes,
+    init_db, save_note, get_notes, get_notes_count, clear_notes, delete_note, get_recent_notes,
     get_all_user_ids, set_auto_daily, get_auto_daily, CATEGORIES,
     set_timezone, get_timezone, save_reminder, get_pending_reminders,
     get_user_reminders, delete_reminder, update_reminder_next,
@@ -92,6 +92,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗺 /review — обзор за неделю\n"
         "💬 /ask <вопрос> — вопрос по заметкам\n"
         "🔢 /count — сколько заметок\n"
+        "📝 /notes — последние заметки\n"
+        "🗑 /delete <id> — удалить заметку\n"
         "🗑 /clear — удалить все заметки\n"
         "🔔 /autodaily [время] — авто-отчёт (напр. /autodaily 21:00)\n"
         "🌍 /timezone CET — часовой пояс\n"
@@ -255,6 +257,42 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     deleted = await clear_notes(update.effective_user.id)
     await update.message.reply_text(f"Удалено заметок: {deleted}.")
+
+
+async def notes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+    notes = await get_recent_notes(update.effective_user.id, limit=10)
+    if not notes:
+        await update.message.reply_text("Заметок пока нет.")
+        return
+
+    lines = ["Последние заметки:\n"]
+    for n in notes:
+        preview = n["text"][:50].replace("\n", " ")
+        cat = f" [{n['category']}]" if n["category"] else ""
+        lines.append(f"{n['id']} — {preview}...{cat}")
+    lines.append("\nУдалить: /delete <id>")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def delete_note_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /delete <id>\nПосмотреть ID: /notes")
+        return
+    try:
+        note_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("ID должен быть числом.")
+        return
+    deleted = await delete_note(note_id, update.effective_user.id)
+    if deleted:
+        total = await get_notes_count(update.effective_user.id)
+        await update.message.reply_text(f"Заметка #{note_id} удалена. Осталось: {total}")
+    else:
+        await update.message.reply_text("Заметка не найдена.")
 
 
 def _is_reminder_request(text: str) -> bool:
@@ -747,6 +785,8 @@ async def main():
     app.add_handler(CommandHandler("ask", ask))
     app.add_handler(CommandHandler("count", count))
     app.add_handler(CommandHandler("clear", clear))
+    app.add_handler(CommandHandler("notes", notes_list))
+    app.add_handler(CommandHandler("delete", delete_note_cmd))
     app.add_handler(CommandHandler("autodaily", autodaily))
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CommandHandler("timezone", set_timezone_cmd))
@@ -766,6 +806,8 @@ async def main():
             BotCommand("review", "Обзор за неделю"),
             BotCommand("ask", "Вопрос по заметкам"),
             BotCommand("count", "Сколько заметок"),
+            BotCommand("notes", "Последние заметки"),
+            BotCommand("delete", "Удалить заметку"),
             BotCommand("clear", "Удалить все заметки"),
             BotCommand("autodaily", "Вкл/выкл авто-отчёт"),
             BotCommand("timezone", "Часовой пояс"),

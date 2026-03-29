@@ -108,6 +108,27 @@ async def get_notes_count(user_id: int) -> int:
         return row[0]
 
 
+async def delete_note(note_id: int, user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM notes WHERE id = ? AND user_id = ?", (note_id, user_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_recent_notes(user_id: int, limit: int = 10) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, text, category, created_at FROM notes WHERE user_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
 async def clear_notes(user_id: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
