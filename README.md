@@ -50,8 +50,3 @@ docker compose up --build -d
 | `AUTO_DAILY_HOUR_UTC` | нет | Час авто-дейли в UTC (по умолчанию 19 = 22:00 MSK) |
 | `DB_PATH` | нет | Путь к SQLite (по умолчанию `./notes.db`) |
 
-## Деплой
-
-Push в `main` → GitHub Actions → SSH на VDS → `docker compose up --build -d`.
-
-Данные хранятся в Docker volume `bot-data`.
