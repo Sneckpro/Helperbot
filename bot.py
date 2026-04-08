@@ -98,7 +98,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔔 /autodaily [время] — авто-отчёт (напр. /autodaily 21:00)\n"
         "🌍 /timezone CET — часовой пояс\n"
         "⏰ /reminders — активные напоминания\n"
-        "❌ /cancel <id> — отменить напоминание\n"
+        "❌ /cancel <id> — отменить напоминание (можно 1,2,3)\n"
+        "❌ /cancelall — отменить все напоминания\n"
         "🆔 /myid — твой Telegram ID\n\n"
         "*Напоминания:* Напиши \"напомни в 15:00 выпить таблетки\" "
         "или \"напоминай каждый день в 9:00 делать зарядку\" — "
@@ -637,7 +638,7 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         days = f" ({r['repeat_days_left']} дн.)" if r["repeat_days_left"] else ""
         lines.append(f"`{r['id']}` — {r['text']} — {time_str}{recurring}{days}")
 
-    lines.append("\nОтменить: /cancel <id>")
+    lines.append("\nОтменить: /cancel <id> (или 1,2,3) | /cancelall")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -646,23 +647,64 @@ async def cancel_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if not context.args:
-        await update.message.reply_text("Использование: /cancel <id напоминания>\nПосмотреть ID: /reminders")
+        await update.message.reply_text("Использование: /cancel <id> или /cancel 1,2,3\nПосмотреть ID: /reminders")
         return
 
-    try:
-        reminder_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("ID должен быть числом.")
+    # Support multiple IDs: /cancel 11 12 13 or /cancel 11,12,13
+    raw = " ".join(context.args)
+    parts = [p.strip() for p in raw.replace(",", " ").split() if p.strip()]
+
+    ids = []
+    for p in parts:
+        try:
+            ids.append(int(p))
+        except ValueError:
+            await update.message.reply_text(f"'{p}' — не число. Используй: /cancel 1,2,3")
+            return
+
+    if not ids:
+        await update.message.reply_text("Использование: /cancel <id> или /cancel 1,2,3")
         return
 
-    deleted = await delete_reminder(reminder_id, user_id=update.effective_user.id)
-    if deleted:
-        jobs = context.job_queue.get_jobs_by_name(f"reminder_{reminder_id}")
-        for job in jobs:
-            job.schedule_removal()
-        await update.message.reply_text(f"Напоминание #{reminder_id} отменено.")
-    else:
-        await update.message.reply_text("Напоминание не найдено.")
+    cancelled = []
+    not_found = []
+    for rid in ids:
+        deleted = await delete_reminder(rid, user_id=update.effective_user.id)
+        if deleted:
+            for job in context.job_queue.get_jobs_by_name(f"reminder_{rid}"):
+                job.schedule_removal()
+            cancelled.append(rid)
+        else:
+            not_found.append(rid)
+
+    lines = []
+    if cancelled:
+        ids_str = ", ".join(f"#{r}" for r in cancelled)
+        lines.append(f"Отменено: {ids_str}")
+    if not_found:
+        ids_str = ", ".join(f"#{r}" for r in not_found)
+        lines.append(f"Не найдено: {ids_str}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cancel_all_reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update.effective_user.id):
+        return
+
+    user_id = update.effective_user.id
+    reminders = await get_user_reminders(user_id)
+    if not reminders:
+        await update.message.reply_text("У тебя нет активных напоминаний.")
+        return
+
+    count = 0
+    for r in reminders:
+        deleted = await delete_reminder(r["id"], user_id=user_id)
+        if deleted:
+            for job in context.job_queue.get_jobs_by_name(f"reminder_{r['id']}"):
+                job.schedule_removal()
+            count += 1
+    await update.message.reply_text(f"Отменено напоминаний: {count}")
 
 
 async def load_reminders(app):
@@ -792,6 +834,7 @@ async def main():
     app.add_handler(CommandHandler("timezone", set_timezone_cmd))
     app.add_handler(CommandHandler("reminders", list_reminders))
     app.add_handler(CommandHandler("cancel", cancel_reminder_cmd))
+    app.add_handler(CommandHandler("cancelall", cancel_all_reminders_cmd))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.FORWARDED, handle_forwarded))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
@@ -813,6 +856,7 @@ async def main():
             BotCommand("timezone", "Часовой пояс"),
             BotCommand("reminders", "Активные напоминания"),
             BotCommand("cancel", "Отменить напоминание"),
+            BotCommand("cancelall", "Отменить все напоминания"),
             BotCommand("myid", "Мой Telegram ID"),
         ])
 
