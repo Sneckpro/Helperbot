@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import BotCommand, Update
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -61,6 +62,44 @@ def is_allowed(user_id: int) -> bool:
     return user_id in ALLOWED_USER_IDS
 
 
+async def send_long_markdown(send_fn, text: str, chunk_size: int = 4000):
+    """Send text chunked at chunk_size with Markdown; fall back to plain text on parse error.
+
+    send_fn is a coroutine taking (text, **kwargs) — typically message.reply_text
+    or bot.send_message bound to a chat_id.
+    """
+    for i in range(0, len(text), chunk_size):
+        chunk = text[i : i + chunk_size]
+        try:
+            await send_fn(chunk, parse_mode="Markdown")
+        except BadRequest as e:
+            if "parse" in str(e).lower() or "entit" in str(e).lower():
+                await send_fn(chunk)
+            else:
+                raise
+
+
+# Phrases that should be treated as reminder requests when they appear at the
+# start of a user message (or photo caption).
+REMINDER_PREFIXES: tuple[str, ...] = (
+    "напомни",
+    "напоминай",
+    "сделай напомина",
+    "поставь напомина",
+    "создай напомина",
+    "добавь напомина",
+    "установи напомина",
+    "запланируй напомина",
+    "нужно напомина",
+    "надо напомина",
+)
+
+
+def _looks_like_reminder(text: str) -> bool:
+    lower = text.lower().strip()
+    return any(lower.startswith(p) for p in REMINDER_PREFIXES)
+
+
 # --- Handlers ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,9 +140,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "❌ /cancel <id> — отменить напоминание (можно 1,2,3)\n"
         "❌ /cancelall — отменить все напоминания\n"
         "🆔 /myid — твой Telegram ID\n\n"
-        "*Напоминания:* Напиши \"напомни в 15:00 выпить таблетки\" "
-        "или \"напоминай каждый день в 9:00 делать зарядку\" — "
-        "бот пришлёт в нужное время.\n\n"
+        "*Напоминания:* Начни сообщение со слов *напомни*, *напоминай*, "
+        "*сделай/поставь/создай/добавь напоминание* — например, "
+        "\"напомни в 15:00 выпить таблетки\", \"сделай напоминание 31 мая поменять курс\", "
+        "\"напоминай каждый день в 9:00 делать зарядку\".\n\n"
         "*Авто-дейли:* Каждый день в 22:00 бот сам пришлёт отчёт "
         "(если за день были заметки). Отключить: /autodaily",
         parse_mode="Markdown",
@@ -144,14 +184,14 @@ async def set_timezone_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None:
+        return
     if not is_allowed(update.effective_user.id):
         return
     user_id = update.effective_user.id
     text = update.message.text
 
-    # Check for reminder keywords
-    lower = text.lower().strip()
-    if lower.startswith("напомни") or lower.startswith("напоминай"):
+    if _looks_like_reminder(text):
         await handle_reminder_request(update, context, text)
         return
 
@@ -186,8 +226,7 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     report = await generate_daily_report(notes)
-    for i in range(0, len(report), 4000):
-        await update.message.reply_text(report[i : i + 4000], parse_mode="Markdown")
+    await send_long_markdown(update.message.reply_text, report)
 
 
 async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -203,8 +242,7 @@ async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     result = await generate_reminders(notes)
-    for i in range(0, len(result), 4000):
-        await update.message.reply_text(result[i : i + 4000], parse_mode="Markdown")
+    await send_long_markdown(update.message.reply_text, result)
 
 
 async def review(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -221,8 +259,7 @@ async def review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     result = await generate_weekly_review(notes)
-    for i in range(0, len(result), 4000):
-        await update.message.reply_text(result[i : i + 4000], parse_mode="Markdown")
+    await send_long_markdown(update.message.reply_text, result)
 
 
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,8 +279,7 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     result = await process_custom_request(notes, question)
-    for i in range(0, len(result), 4000):
-        await update.message.reply_text(result[i : i + 4000], parse_mode="Markdown")
+    await send_long_markdown(update.message.reply_text, result)
 
 
 async def count(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -300,8 +336,9 @@ def _is_reminder_request(text: str) -> bool:
     lower = text.lower().strip()
     if lower.startswith("/reminders"):
         return True
-    return (lower.startswith("напомни") or lower.startswith("напоминай")
-            or "напоминани" in lower)
+    if _looks_like_reminder(lower):
+        return True
+    return "напоминани" in lower
 
 
 def _clean_reminder_text(text: str) -> str:
@@ -313,6 +350,8 @@ def _clean_reminder_text(text: str) -> str:
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None:
+        return
     if not is_allowed(update.effective_user.id):
         return
 
@@ -408,6 +447,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None:
+        return
     if not is_allowed(update.effective_user.id):
         return
 
@@ -448,6 +489,8 @@ def _get_forward_source(message) -> str:
 
 
 async def handle_forwarded(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message is None:
+        return
     if not is_allowed(update.effective_user.id):
         return
 
@@ -639,7 +682,7 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"`{r['id']}` — {r['text']} — {time_str}{recurring}{days}")
 
     lines.append("\nОтменить: /cancel <id> (или 1,2,3) | /cancelall")
-    await update.message.reply_text("\n".join(lines))
+    await send_long_markdown(update.message.reply_text, "\n".join(lines))
 
 
 async def cancel_reminder_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -796,12 +839,11 @@ async def auto_daily_job(context: ContextTypes.DEFAULT_TYPE):
             report = await generate_daily_report(notes)
             header = "📊 *Авто-дейли отчёт*\n\n"
             full = header + report
-            for i in range(0, len(full), 4000):
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=full[i : i + 4000],
-                    parse_mode="Markdown",
-                )
+
+            async def _send(text, **kwargs):
+                await context.bot.send_message(chat_id=user_id, text=text, **kwargs)
+
+            await send_long_markdown(_send, full)
             await set_last_auto_daily(user_id, today_str)
             logger.info(f"Auto-daily sent to {user_id}")
         except Exception as e:
